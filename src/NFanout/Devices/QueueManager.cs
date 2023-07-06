@@ -36,21 +36,25 @@ public class QueueManager
     private Dictionary<string, ActionBlock<MessageDTO>> _queues;
     private ActionBlock<MessageDTO> _input;
     private readonly IWorker _worker;
+    private readonly Metrics _metrics;
 
     public QueueManager(NFanoutConfiguration configuration,
         ILogger<QueueManager> logger,
-        IServiceProvider servProvider)
+        IServiceProvider servProvider,
+        Metrics metrics)
     {
         _configuration = configuration;
         _logger = logger;
+        _metrics = metrics;
 
         //
         // enqueue messages
         //
-        _input = new ActionBlock<MessageDTO>(Enroute, 
-            new ExecutionDataflowBlockOptions 
-            { 
-                EnsureOrdered = true, 
+        _input = new ActionBlock<MessageDTO>(
+            Enroute,
+            new ExecutionDataflowBlockOptions
+            {
+                EnsureOrdered = true,
                 MaxDegreeOfParallelism = 1
             });
 
@@ -81,11 +85,11 @@ public class QueueManager
 
         _queues[key] = new ActionBlock<MessageDTO>(
             DoRunMessage,
-            new ExecutionDataflowBlockOptions 
-            { 
-                EnsureOrdered = true, 
+            new ExecutionDataflowBlockOptions
+            {
+                EnsureOrdered = true,
                 // every single queue elaboration is single thread
-                MaxDegreeOfParallelism = 1 
+                MaxDegreeOfParallelism = 1
             });
 
         return _queues[key];
@@ -97,12 +101,20 @@ public class QueueManager
     /// <param name="message"></param>
     private void DoRunMessage(MessageDTO message)
     {
+        var metric = _metrics.GetMetric(message.QueueKey!);
         try
         {
+
+            metric.AddJobStarted();
+            metric.LastJobUTC = DateTime.UtcNow;
+
             _worker.DoWork(new WorkDataRecord(message.QueueKey!, message.Payload, message.StartUtc));
+
+            metric.AddJobCompleted();
 
             // add overall duration 
             message.DurationMillis = DateTime.UtcNow.Ticks - message.StartUtc;
+            metric.AddJobTime(message.DurationMillis);
 
             _logger.LogInformation($"Queue: {message.QueueKey}, message {message.Payload}, duration millis {message.DurationMillis}");
         }
@@ -119,13 +131,12 @@ public class QueueManager
     public void Enroute(MessageDTO message)
     {
         _queues.TryGetValue(message.QueueKey!, out var queue);
+        if (queue == null)
+            queue = AddQueue(message.QueueKey!);
 
-        if (queue != null)
-        {
-            queue.Post(message);
-            return;
-        }
+        queue.Post(message);
 
-        AddQueue(message.QueueKey!).Post(message);
+        _metrics.GetMetric(message.QueueKey!)
+            .AddJobQueued();
     }
 }

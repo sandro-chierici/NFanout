@@ -41,6 +41,9 @@ public static class DependencyInjectionExtensions
         // spread configuration
         serviceCollection.AddSingleton(configuration);
 
+        // Metrics
+        serviceCollection.AddSingleton<Metrics>();
+
         // register RoutingAlgos provided
         serviceCollection.AddSingleton<DefaultKeyRouting>();
         serviceCollection.AddSingleton<RoundRobin>();
